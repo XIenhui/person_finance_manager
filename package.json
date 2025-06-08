@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "module-alias": "^2.2.3",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  },
+  "type": "module",
+  "imports": {
+    "#routes/*": "./src/routes/*",
+    "#utils/*": "./src/utils/*"
+  },
+  "scripts": {
+    "dev": "nodemon index.js",
+    "start": "node index.js"
+  }
+}
