@@ -1,0 +1,50 @@
+.com-search .el-form-item__label {
+    margin: 0 auto;
+    font-size: 13px;
+    font-weight: normal;
+    letter-spacing: 0;
+    color: #1E1E1E;
+}
+.com-search .el-input__inner {
+    height: 28px;
+    font-size: 13px;
+    font-weight: normal;
+    line-height: 13px;
+}
+.com-search el-select {
+    height: 28px;
+}
+.com-search el-date-editor {
+    height: 28px;
+}
+.com-search .el-select__selected-item {
+    font-size: 13px;
+    font-weight: normal;
+    line-height: 13px;
+}
+.com-search .el-button {
+    height: 28px;
+    font-size: 13px;
+    font-weight: normal;
+    line-height: 13px;
+}
+.com-table {
+    flex-grow: 1;
+}
+.com-table .el-button {
+    margin: 0;
+    padding: 0;
+    width: 42px;
+    height: 24px;
+    font-size: 13px;
+    font-weight: normal;
+    line-height: 13px;
+    letter-spacing: normal;
+}
+.com-table .function {
+    display: flex;
+    justify-content: left;
+    align-items: center;
+    gap: 8px 8px;
+    flex-wrap: wrap;
+}
