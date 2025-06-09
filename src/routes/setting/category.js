@@ -15,7 +15,7 @@ const router = express.Router();
  */
 router.get('/list', async (req, res) => {
     try {
-        const { type, is_active } = req.query;
+        const { type, is_active, in_statistics } = req.query;
 
         let query = 'SELECT * FROM transaction_categories WHERE 1=1';
         const params = [];
@@ -36,7 +36,8 @@ router.get('/list', async (req, res) => {
         const result = await db.query(query, params);
         const records = result.rows.map(row => ({
             ...row,
-            is_active: row.is_active ? 1 : 0
+            is_active: row.is_active ? 1 : 0,
+            in_statistics: row.in_statistics ? 1 : 0
         }));
 
         const tree = buildTree(records);
@@ -123,7 +124,7 @@ router.get('/detail/:id', async (req, res) => {
  */
 router.post('/add', async (req, res) => {
     try {
-        const { name, type, parent_id, icon, description } = req.body;
+        const { name, type, parent_id, icon, description, is_active, in_statistics } = req.body;
 
         if (!name || !type || !['income', 'expense'].includes(type)) {
             return res.status(400).json(error('参数不合法'));
@@ -200,10 +201,13 @@ router.post('/add', async (req, res) => {
         // 创建分类
         const result = await db.query(
             `INSERT INTO transaction_categories 
-             (name, type, parent_id, code, full_code, level, icon, description)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (name, type, parent_id, code, full_code, level, icon, description, is_active, in_statistics)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING *`,
-            [name, type, parent_id || null, code, full_code, level, icon || null, description || null]
+            [name, type, parent_id || null, code, full_code, level, icon || null, description || null,
+                is_active !== undefined ? is_active : true,
+                in_statistics !== undefined ? in_statistics : true,
+            ]
         );
 
         res.status(201).json(success(result.rows[0], '分类创建成功'));
@@ -230,7 +234,7 @@ router.post('/add', async (req, res) => {
 router.put('/edit/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, icon, is_active, description } = req.body;
+        const { name, icon, is_active, description, in_statistics } = req.body;
 
         // 检查分类是否存在
         const checkResult = await db.query(
@@ -250,11 +254,18 @@ router.put('/edit/:id', async (req, res) => {
                icon = COALESCE($2, icon),
                is_active = COALESCE($3, is_active),
                description = COALESCE($4, description),
+               in_statistics = COALESCE($5, in_statistics),
                updated_at = NOW()
-             WHERE id = $5
+             WHERE id = $6
              RETURNING *`,
-            [name || null, icon || null, is_active !== undefined ? is_active : null,
-                description || null, id]
+            [
+                name || null,
+                icon || null,
+                is_active !== undefined ? is_active : null,
+                description || null,
+                in_statistics !== undefined ? in_statistics : null,
+                id
+            ]
         );
 
         res.json(success(result.rows[0], '分类更新成功'));
