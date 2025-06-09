@@ -329,6 +329,7 @@ router.post('/add', async (req, res) => {
                     description || null,
                     attachment || null,
                     status,
+                    false
                 ];
 
                 const insertResult = await db.query(insertQuery, insertParams);
@@ -731,46 +732,6 @@ router.delete('/delete/:id', async (req, res) => {
 
         try {
             // 如果是转账交易，需要删除关联的交易记录
-            if (transaction.is_transfer) {
-                const relatedQuery = `
-                    DELETE FROM transactions 
-                    WHERE transaction_no = $1 AND id != $2
-                    RETURNING id, account_id, amount
-                `;
-                const relatedResult = await db.query(relatedQuery, [transaction.transaction_no, id]);
-
-                if (relatedResult.rows.length > 0) {
-                    const relatedTransaction = relatedResult.rows[0];
-                    // 恢复关联账户余额
-                    const updateRelatedAccountQuery = `
-                        UPDATE financial_accounts 
-                        SET balance = balance - $1 
-                        WHERE id = $2
-                    `;
-                    await db.query(updateRelatedAccountQuery, [
-                        -relatedTransaction.amount, // 因为是反向操作，所以取反
-                        relatedTransaction.account_id
-                    ]);
-
-                    // 如果是最近交易，更新后续交易余额
-                    if (isRecentTransaction) {
-                        const updateSubsequentQuery = `
-                            UPDATE transactions
-                            SET balance_after = balance_after - $1
-                            WHERE 
-                                (transaction_date > $2 OR 
-                                (transaction_date = $2 AND id > $3)) AND
-                                account_id = $4
-                        `;
-                        await db.query(updateSubsequentQuery, [
-                            -relatedTransaction.amount,
-                            transactionDate,
-                            relatedTransaction.id,
-                            relatedTransaction.account_id
-                        ]);
-                    }
-                }
-            }
 
             // 恢复账户余额
             const updateAccountQuery = `
@@ -884,28 +845,6 @@ router.get('/related/:id', async (req, res) => {
         const currentTransaction = currentResult.rows[0];
 
         let relatedTransactions = [];
-        if (currentTransaction.is_transfer) {
-            // 如果是转账交易，获取关联的交易记录
-            const relatedQuery = `
-                SELECT 
-                    t.id,
-                    t.transaction_no,
-                    t.account_id,
-                    t.amount,
-                    t.transaction_type,
-                    t.transaction_date,
-                    t.status,
-                    a.account_name
-                FROM transactions t
-                LEFT JOIN financial_accounts a ON t.account_id = a.id
-                WHERE t.transaction_no = $1 AND t.id != $2
-            `;
-            const relatedResult = await db.query(relatedQuery, [
-                currentTransaction.transaction_no,
-                id
-            ]);
-            relatedTransactions = relatedResult.rows;
-        }
 
         res.json(success(relatedTransactions));
     } catch (err) {
