@@ -20,7 +20,6 @@ const router = express.Router();
  * @apiParam {String} [endTime] 结束日期(YYYY-MM-DD HH:mm:ss)
  * @apiParam {Number} [minAmount] 最小金额
  * @apiParam {Number} [maxAmount] 最大金额
- * @apiParam {Boolean} [isTransfer] 是否转账交易
  */
 router.get('/list', async (req, res) => {
     try {
@@ -35,7 +34,6 @@ router.get('/list', async (req, res) => {
             endTime,
             minAmount,
             maxAmount,
-            isTransfer
         } = req.query;
 
         let query = `
@@ -100,10 +98,6 @@ router.get('/list', async (req, res) => {
             params.push(maxAmount);
         }
 
-        if (isTransfer !== undefined) {
-            query += ` AND t.is_transfer = $${paramIndex++}`;
-            params.push(isTransfer === 'true');
-        }
 
         // 获取总数
         const countQuery = `SELECT COUNT(*) FROM (${query}) as total`;
@@ -231,12 +225,6 @@ router.post('/add', async (req, res) => {
                 return res.status(400).json(error('金额必须大于0'));
             }
 
-            // 转账交易验证
-            const isTransfer = transaction_type === 'transfer';
-            if (isTransfer && !related_account_id) {
-                return res.status(400).json(error('转账交易必须指定关联账户'));
-            }
-
             if (new Date(transaction_date) < oneMonthAgo) {
                 return res.status(400).json(error('只能添加最近一个月内的交易金额或账户'));
             }
@@ -274,12 +262,6 @@ router.post('/add', async (req, res) => {
                     throw new Error(`分类 ${category_id} 不存在`);
                 }
 
-                // 验证分类类型与交易类型匹配
-                const isTransfer = transaction_type === 'transfer';
-                if (!isTransfer && categoryCheck.rows[0].type !== transaction_type) {
-                    throw new Error('分类类型与交易类型不匹配');
-                }
-
                 // 生成交易编号
                 const transaction_no = await generateTransactionNo(results.length + 1);
 
@@ -304,21 +286,12 @@ router.post('/add', async (req, res) => {
                     amountValue = Math.abs(amount);
                 } else if (transaction_type === 'expense') {
                     amountValue = -Math.abs(amount);
-                } else if (isTransfer) {
-                    amountValue = -Math.abs(amount);
                 }
 
                 balanceAfter = previousBalance + amountValue;
                 if (transaction_type === 'income') {
                     amountValue = Math.abs(amount);
                 } else if (transaction_type === 'expense') {
-                    amountValue = -Math.abs(amount);
-                } else if (isTransfer) {
-                    // 转账交易需要验证关联账户
-                    const relatedAccountCheck = await db.query('SELECT id, balance FROM financial_accounts WHERE id = $1', [related_account_id]);
-                    if (relatedAccountCheck.rows.length === 0) {
-                        throw new Error('关联账户不存在');
-                    }
                     amountValue = -Math.abs(amount);
                 }
 
@@ -356,72 +329,11 @@ router.post('/add', async (req, res) => {
                     description || null,
                     attachment || null,
                     status,
-                    isTransfer
                 ];
 
                 const insertResult = await db.query(insertQuery, insertParams);
                 const transactionId = insertResult.rows[0].id;
                 const newTransactionDate = insertResult.rows[0].transaction_date;
-
-                // 如果是转账交易，需要创建对应的另一条记录
-                if (isTransfer) {
-                    const relatedBalanceAfter = parseFloat(accountCheck.rows[0].balance) + parseFloat(amount);
-
-                    const relatedInsertQuery = `
-                        INSERT INTO transactions (
-                            transaction_no,
-                            account_id,
-                            related_account_id,
-                            category_id,
-                            amount,
-                            transaction_type,
-                            transaction_date,
-                            balance_after,
-                            payee,
-                            payer,
-                            description,
-                            attachment,
-                            status,
-                            is_transfer
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                        RETURNING id, transaction_date
-                    `;
-                    const relatedInsertParams = [
-                        transaction_no + '-R',
-                        related_account_id,
-                        account_id,
-                        category_id,
-                        Math.abs(amount),
-                        transaction_type,
-                        transaction_date,
-                        relatedBalanceAfter,
-                        payer || null,
-                        payee || null,
-                        description || null,
-                        attachment || null,
-                        status,
-                        isTransfer
-                    ];
-
-                    const relatedInsertResult = await db.query(relatedInsertQuery, relatedInsertParams);
-                    const relatedTransactionDate = relatedInsertResult.rows[0].transaction_date;
-
-                    // 更新关联账户的后续交易余额
-                    const updateRelatedSubsequentQuery = `
-                        UPDATE transactions
-                        SET balance_after = balance_after + $1
-                        WHERE 
-                            account_id = $2 AND
-                            (transaction_date > $3 OR 
-                            (transaction_date = $3 AND id > $4))
-                    `;
-                    await db.query(updateRelatedSubsequentQuery, [
-                        Math.abs(amount),
-                        related_account_id,
-                        relatedTransactionDate,
-                        relatedInsertResult.rows[0].id
-                    ]);
-                }
 
                 // 更新账户余额
                 const updateAccountQuery =
@@ -443,13 +355,6 @@ router.post('/add', async (req, res) => {
                     newTransactionDate,
                     transactionId
                 ]);
-
-                // 如果是转账交易，还需要更新关联账户余额
-                if (isTransfer) {
-                    const relatedAccount = await db.query('SELECT balance FROM financial_accounts WHERE id = $1', [related_account_id]);
-                    const relatedBalanceAfter = parseFloat(relatedAccount.rows[0].balance) + parseFloat(amount);
-                    await db.query(updateAccountQuery, [relatedBalanceAfter, related_account_id]);
-                }
 
                 results.push({
                     id: transactionId,
@@ -515,10 +420,6 @@ router.put('/edit/:id', async (req, res) => {
             status
         } = req.body;
 
-        const isTransfer = transaction_type === 'transfer';
-        const amountTrans = amount !== undefined &&
-        (transaction_type === 'expense' || isTransfer) ? -Math.abs(amount) : Math.abs(amount);
-
         // 获取原始交易记录
         const originalQuery = 'SELECT * FROM transactions WHERE id = $1';
         const originalResult = await db.query(originalQuery, [id]);
@@ -527,10 +428,21 @@ router.put('/edit/:id', async (req, res) => {
         }
 
         const originalTransaction = originalResult.rows[0];
+        const originAmountTrans = (originalTransaction.transaction_type === 'expense') ?
+            -Math.abs(originalTransaction.amount) :
+            Math.abs(originalTransaction.amount);
+
+        const newAmountTrans = amount !== undefined &&
+        (transaction_type === 'expense') ? -Math.abs(amount) : Math.abs(amount);
 
         // 检查是否是最近一个月的交易
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+
+        // 检查交易是否在一个月内
+        if (new Date(originalTransaction.transaction_date) < oneMonthAgo) {
+            return res.status(400).json(error('只能修改最近一个月内的交易金额或账户'));
+        }
 
         // 开始事务
         await db.query('BEGIN');
@@ -599,38 +511,36 @@ router.put('/edit/:id', async (req, res) => {
             if (updateFields.length === 0) {
                 return res.status(400).json(error('没有提供更新字段'));
             }
-            const dataChange = transaction_date !== originalResult.transaction_date;
-            // 处理金额或账户变更
-            if (amount !== undefined || account_id !== undefined) {
-                // 检查交易是否在一个月内
-                if (new Date(originalTransaction.transaction_date) < oneMonthAgo) {
-                    return res.status(400).json(error('只能修改最近一个月内的交易金额或账户'));
-                }
 
-                // 验证新账户是否存在
-                const newAccountId = account_id !== undefined ? account_id : originalTransaction.account_id;
-                const isSameAccount = newAccountId === originalTransaction.account_id;
-                const accountQuery = 'SELECT * FROM financial_accounts WHERE id = $1';
-                const accountResult = await db.query(accountQuery, [newAccountId]);
-                if (accountResult.rows.length === 0) {
-                    return res.status(404).json(error('交易账户不存在'));
-                }
-                if (isSameAccount) {
-                    const amountChange = originalTransaction.amount - amountTrans;
-                    // 更新当前交易的余额
-                    updateFields.push(`balance_after = balance_after - $${paramIndex++}`);
-                    updateParams.push(amountChange);
+            const newAccountId = account_id !== undefined ? account_id : originalTransaction.account_id;
+            const isSameAccount = newAccountId === originalTransaction.account_id;
+            const isDateChanged = transaction_date !== undefined &&
+                transaction_date !== originalTransaction.transaction_date;
 
-                    // 更新账户余额
-                    const updateAccountQuery = `
-                        UPDATE financial_accounts 
-                        SET balance = balance - $1
-                        WHERE id = $2
-                    `;
-                    await db.query(updateAccountQuery, [amountChange, newAccountId]);
+            // 验证新账户是否存在
+            const accountQuery = 'SELECT id, balance FROM financial_accounts WHERE id = $1';
+            const accountResult = await db.query(accountQuery, [newAccountId]);
+            if (accountResult.rows.length === 0) {
+                throw new Error('交易账户不存在');
+            }
 
-                    // 获取需要更新的后续交易
-                    const subsequentQuery = `
+            // 处理账户变更
+            if (account_id !== undefined && !isSameAccount) {
+                // 1. 恢复原账户余额和后续交易
+
+                // 更新原账户余额
+                const updateOriginalAccountQuery = `
+                    UPDATE financial_accounts 
+                    SET balance = balance - $1
+                    WHERE id = $2
+                `;
+                await db.query(updateOriginalAccountQuery, [
+                    originAmountTrans,
+                    originalTransaction.account_id
+                ]);
+
+                // 更新原账户后续交易
+                const updateOriginalSubsequentQuery = `
                     UPDATE transactions
                     SET balance_after = balance_after - $1
                     WHERE 
@@ -638,54 +548,129 @@ router.put('/edit/:id', async (req, res) => {
                         (transaction_date > $3 OR 
                         (transaction_date = $3 AND id > $4))
                 `;
-                    const subsequentParams = [
-                        amountChange,
-                        newAccountId,
-                        originalTransaction.transaction_date,
-                        id,
-                    ];
-                    await db.query(subsequentQuery, subsequentParams);
+                await db.query(updateOriginalSubsequentQuery, [
+                    originAmountTrans,
+                    originalTransaction.account_id,
+                    originalTransaction.transaction_date,
+                    id
+                ]);
 
-                } else {
-                    //
-                }
+                // 2. 更新新账户余额和后续交易
+                const updateNewAccountQuery = `
+                    UPDATE financial_accounts 
+                    SET balance = balance + $1
+                    WHERE id = $2
+                `;
+                await db.query(updateNewAccountQuery, [
+                    originAmountTrans,
+                    newAccountId
+                ]);
 
-                // 如果是转账交易，还需要处理关联账户
-                // if (originalTransaction.is_transfer) {
-                //     const relatedAccountId = originalTransaction.related_account_id;
-                //     const reverseAmountChange = -amountChange; // 反向金额变化
-                //
-                //     // 更新关联账户余额
-                //     await db.query(updateAccountQuery, [reverseAmountChange, relatedAccountId]);
-                //
-                //     // 更新关联账户的后续交易
-                //     const relatedSubsequentQuery = `
-                //         SELECT id, account_id, amount, balance_after
-                //         FROM transactions
-                //         WHERE
-                //             transaction_date >= $1 AND
-                //             id != $2 AND
-                //             account_id = $3
-                //         ORDER BY transaction_date, id
-                //     `;
-                //     const relatedSubsequentResult = await db.query(relatedSubsequentQuery, [
-                //         originalTransaction.transaction_date,
-                //         originalTransaction.id,
-                //         relatedAccountId
-                //     ]);
-                //
-                //     for (const tx of relatedSubsequentResult.rows) {
-                //         const updateSubsequentQuery = `
-                //             UPDATE transactions
-                //             SET balance_after = balance_after - $1
-                //             WHERE id = $2
-                //         `;
-                //         await db.query(updateSubsequentQuery, [reverseAmountChange, tx.id]);
-                //     }
-                // }
+                // 更新新账户后续交易
+                const updateNewSubsequentQuery = `
+                    UPDATE transactions
+                    SET balance_after = balance_after + $1
+                    WHERE 
+                        account_id = $2 AND
+                        (transaction_date > $3 OR 
+                        (transaction_date = $3 AND id > $4))
+                `;
+                await db.query(updateNewSubsequentQuery, [
+                    originAmountTrans,
+                    newAccountId,
+                    originalTransaction.transaction_date,
+                    id
+                ]);
             }
 
-            // 执行更新
+            // 处理交易时间变更
+            if (isDateChanged) {
+                // 获取新旧时间边界
+                const oldDate = originalTransaction.transaction_date;
+                const newDate = transaction_date;
+                const isBack = new Date(newDate) < new Date(oldDate);
+
+                // 确定时间范围
+                const [startDate, endDate] = isBack ? [newDate, oldDate] : [oldDate, newDate];
+
+                // 更新受影响交易的余额
+                if (isBack) {
+                    const updateTimeChangeQuery = `
+                    UPDATE transactions
+                    SET balance_after = balance_after + $1
+                    WHERE 
+                        account_id = $2 AND
+                        (transaction_date > $3 OR 
+                        (transaction_date = $3 AND id > $5)) AND
+                        (transaction_date < $4 OR 
+                        (transaction_date = $4 AND id < $5)) AND
+                        id != $5
+                `;
+
+                    await db.query(updateTimeChangeQuery, [
+                        originAmountTrans,
+                        newAccountId,
+                        startDate,
+                        endDate,
+                        id
+                    ]);
+                } else {
+                    const updateTimeChangeQuery = `
+                    UPDATE transactions
+                    SET balance_after = balance_after - $1
+                    WHERE 
+                        account_id = $2 AND
+                        (transaction_date > $3 OR 
+                        (transaction_date = $3 AND id > $5)) AND
+                        (transaction_date < $4 OR 
+                        (transaction_date = $4 AND id < $5)) AND
+                        id != $5
+                `;
+
+                    await db.query(updateTimeChangeQuery, [
+                        originAmountTrans,
+                        newAccountId,
+                        startDate,
+                        endDate,
+                        id
+                    ]);
+                }
+            }
+
+            // 处理金额变更
+            if (amount !== undefined) {
+                const amountChange = originAmountTrans - newAmountTrans;
+
+                // 更新当前交易的余额
+                updateFields.push(`balance_after = balance_after - $${paramIndex++}`);
+                updateParams.push(amountChange);
+
+                // 更新账户余额
+                const updateAccountQuery = `
+                    UPDATE financial_accounts 
+                    SET balance = balance - $1
+                    WHERE id = $2
+                `;
+                await db.query(updateAccountQuery, [amountChange, newAccountId]);
+
+                // 更新后续交易余额
+                const updateSubsequentQuery = `
+                    UPDATE transactions
+                    SET balance_after = balance_after - $1
+                    WHERE 
+                        account_id = $2 AND
+                        (transaction_date > $3 OR 
+                        (transaction_date = $3 AND id > $4))
+                `;
+                await db.query(updateSubsequentQuery, [
+                    amountChange,
+                    newAccountId,
+                    transaction_date || originalTransaction.transaction_date,
+                    id
+                ]);
+            }
+
+            // 更新交易记录
             const updateQuery = `
                 UPDATE transactions 
                 SET ${updateFields.join(', ')} 
@@ -712,7 +697,6 @@ router.put('/edit/:id', async (req, res) => {
         res.status(500).json(error('更新交易失败', err.message));
     }
 });
-
 /**
  * @api {delete} /transactions/:id 删除交易
  * @apiName DeleteTransaction
@@ -738,9 +722,8 @@ router.delete('/delete/:id', async (req, res) => {
         // 检查交易是否在一个月内
         const isRecentTransaction = transactionDate >= oneMonthAgo;
 
-        const isTransfer = transaction.transaction_type === 'transfer';
         const amountTrans =
-            (transaction.transaction_type === 'expense' || isTransfer) ?
+            (transaction.transaction_type === 'expense') ?
                 -Math.abs(transaction.amount) :
                 Math.abs(transaction.amount);
         // 开始事务
