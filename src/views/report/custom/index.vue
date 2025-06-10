@@ -25,7 +25,6 @@
             />
           </el-form-item>
         </el-col>
-
         <el-col :span="14" v-if="timeRangeType === 'month'">
           <el-form-item label="选择月份">
             <el-date-picker
