@@ -168,6 +168,16 @@ router.post('/add', async (req, res) => {
             }
         }
 
+        //验证父分类是否存在交易记录
+        const transResult = await db.query(
+            'SELECT * FROM transactions WHERE category_id = $1',
+            [parent_id]
+        );
+
+        let parent_has_trans = transResult.rows.length !== 0;
+
+        let query = 'SELECT * FROM transaction_categories WHERE 1=1';
+        const params = [];
         // 生成分类编码
         let code, full_code, level;
         if (parent_id && parent !== null) {
@@ -210,7 +220,19 @@ router.post('/add', async (req, res) => {
             ]
         );
 
-        res.status(201).json(success(result.rows[0], '分类创建成功'));
+        if (parent_has_trans) {
+            await db.query(
+                `
+                    UPDATE transactions
+                    SET category_id = $1
+                    WHERE 
+                        category_id = $2`,
+                [result.rows[0].id, parent_id]
+            );
+        }
+
+        res.status(201).json(success(result.rows[0],
+            parent_has_trans ? '父分类存在的交易记录，将自动转移至该子分类' : '分类创建成功'));
     } catch (err) {
         if (err.code === '23505') { // 唯一约束冲突
             return res.status(400).json(error('分类编码已存在'));
