@@ -2,6 +2,8 @@ import express from 'express';
 import db from '#utils/db.js';
 import {error, success} from '#utils/response.js';
 import {generateTransactionNo} from '#utils/common.js';
+import {buildTree} from "#utils/treeUtil.js";
+import dayjs from "dayjs";
 
 const router = express.Router();
 
@@ -13,7 +15,7 @@ const router = express.Router();
  * @apiParam {Number} [page=1] 页码
  * @apiParam {Number} [pageSize=10] 每页数量
  * @apiParam {Number} [accountId] 账户ID
- * @apiParam {Number} [categoryId] 分类ID
+ * @apiParam {Number} [fullCode] 分类ID
  * @apiParam {String} [type] 交易类型(income/expense/transfer)
  * @apiParam {String} [status] 交易状态(pending/completed/cancelled)
  * @apiParam {String} [startTime] 开始日期(YYYY-MM-DD HH:mm:ss)
@@ -27,7 +29,7 @@ router.get('/list', async (req, res) => {
             page = 1,
             pageSize = 10,
             accountId,
-            categoryId,
+            fullCode,
             transactionType,
             status,
             startTime,
@@ -62,9 +64,10 @@ router.get('/list', async (req, res) => {
             params.push(accountId);
         }
 
-        if (categoryId) {
-            query += ` AND (t.category_id = $${paramIndex} OR c.parent_id = $${paramIndex})`;
-            params.push(categoryId);
+        if (fullCode) {
+            query += ` AND (c.full_code = $${paramIndex} OR
+            c.full_code LIKE $${paramIndex} || '.%')`;
+            params.push(fullCode);
             paramIndex++;
         }
 
@@ -113,7 +116,6 @@ router.get('/list', async (req, res) => {
             ...row,
             is_transfer: row.is_transfer ? 1 : 0
         }));
-
         res.json(success({
             list: transactions,
             total,
@@ -214,7 +216,6 @@ router.post('/add', async (req, res) => {
                 attachment,
                 status = 'completed'
             } = transaction;
-
             // 验证必填字段
             if (!account_id || !category_id || !amount || !transaction_type || !transaction_date) {
                 return res.status(400).json(error('缺少必填参数'));
@@ -225,9 +226,9 @@ router.post('/add', async (req, res) => {
                 return res.status(400).json(error('金额必须大于0'));
             }
 
-            if (new Date(transaction_date) < oneMonthAgo) {
-                return res.status(400).json(error('只能添加最近一个月内的交易金额或账户'));
-            }
+            // if (new Date(transaction_date) < oneMonthAgo) {
+            //     return res.status(400).json(error('只能添加最近一个月内的交易金额或账户'));
+            // }
         }
         // 开始事务
         await db.query('BEGIN');
@@ -289,11 +290,6 @@ router.post('/add', async (req, res) => {
                 }
 
                 balanceAfter = previousBalance + amountValue;
-                if (transaction_type === 'income') {
-                    amountValue = Math.abs(amount);
-                } else if (transaction_type === 'expense') {
-                    amountValue = -Math.abs(amount);
-                }
 
                 // 插入交易记录
                 const insertQuery = `
@@ -436,14 +432,14 @@ router.put('/edit/:id', async (req, res) => {
         const newAmountTrans = amount !== undefined &&
         (transaction_type === 'expense') ? -Math.abs(amount) : Math.abs(amount);
 
-        // 检查是否是最近一个月的交易
-        const oneMonthAgo = new Date();
-        oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-
-        // 检查交易是否在一个月内
-        if (new Date(originalTransaction.transaction_date) < oneMonthAgo) {
-            return res.status(400).json(error('只能修改最近一个月内的交易金额或账户'));
-        }
+        // // 检查是否是最近一个月的交易
+        // const oneMonthAgo = new Date();
+        // oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+        //
+        // // 检查交易是否在一个月内
+        // if (new Date(originalTransaction.transaction_date) < oneMonthAgo) {
+        //     return res.status(400).json(error('只能修改最近一个月内的交易金额或账户'));
+        // }
 
         // 开始事务
         await db.query('BEGIN');
@@ -471,7 +467,7 @@ router.put('/edit/:id', async (req, res) => {
 
             if (amount !== undefined) {
                 updateFields.push(`amount = $${paramIndex++}`);
-                updateParams.push(amountTrans);
+                updateParams.push(newAmountTrans);
             }
 
             if (transaction_type !== undefined) {
@@ -587,16 +583,16 @@ router.put('/edit/:id', async (req, res) => {
             // 处理交易时间变更
             if (isDateChanged) {
                 // 获取新旧时间边界
-                const oldDate = originalTransaction.transaction_date;
-                const newDate = transaction_date;
+                const oldDate = dayjs(originalTransaction.transaction_date).format('YYYY-MM-DD HH:mm:ss');
+                const newDate = dayjs(transaction_date).format('YYYY-MM-DD HH:mm:ss');
                 const isBack = new Date(newDate) < new Date(oldDate);
 
                 // 确定时间范围
                 const [startDate, endDate] = isBack ? [newDate, oldDate] : [oldDate, newDate];
 
                 // 更新受影响交易的余额
-                if (isBack) {
-                    const updateTimeChangeQuery = `
+                const updateTimeChangeQuery = isBack ?
+                    `
                     UPDATE transactions
                     SET balance_after = balance_after + $1
                     WHERE 
@@ -605,18 +601,8 @@ router.put('/edit/:id', async (req, res) => {
                         (transaction_date = $3 AND id > $5)) AND
                         (transaction_date < $4 OR 
                         (transaction_date = $4 AND id < $5)) AND
-                        id != $5
-                `;
-
-                    await db.query(updateTimeChangeQuery, [
-                        originAmountTrans,
-                        newAccountId,
-                        startDate,
-                        endDate,
-                        id
-                    ]);
-                } else {
-                    const updateTimeChangeQuery = `
+                        id != $5` :
+                    `
                     UPDATE transactions
                     SET balance_after = balance_after - $1
                     WHERE 
@@ -625,17 +611,40 @@ router.put('/edit/:id', async (req, res) => {
                         (transaction_date = $3 AND id > $5)) AND
                         (transaction_date < $4 OR 
                         (transaction_date = $4 AND id < $5)) AND
-                        id != $5
-                `;
+                        id != $5`;
 
-                    await db.query(updateTimeChangeQuery, [
-                        originAmountTrans,
-                        newAccountId,
-                        startDate,
-                        endDate,
-                        id
-                    ]);
-                }
+                await db.query(updateTimeChangeQuery, [
+                    originAmountTrans,
+                    newAccountId,
+                    startDate,
+                    endDate,
+                    id
+                ]);
+
+
+                //获取上一个balance_after, 更新本身
+                let balanceAfter;
+
+                const prevTransactionRes = await db.query(`
+                    SELECT balance_after
+                    FROM transactions
+                    WHERE account_id = $1 AND id <> $3
+                      AND (transaction_date < $2 OR (transaction_date = $2 AND id < $3))
+                    ORDER BY transaction_date DESC, id DESC
+                    LIMIT 1
+                `, [account_id, newDate, id]);
+
+                const previousBalance = prevTransactionRes.rows.length > 0
+                    ? parseFloat(prevTransactionRes.rows[0].balance_after)
+                    : 0;
+                balanceAfter = previousBalance + originAmountTrans;
+                const updateQuery = `
+                    UPDATE transactions 
+                    SET balance_after = $1
+                    WHERE id = $2
+                    RETURNING *
+                `;
+                await db.query(updateQuery, [balanceAfter, id]);
             }
 
             // 处理金额变更
@@ -731,8 +740,6 @@ router.delete('/delete/:id', async (req, res) => {
         await db.query('BEGIN');
 
         try {
-            // 如果是转账交易，需要删除关联的交易记录
-
             // 恢复账户余额
             const updateAccountQuery = `
                 UPDATE financial_accounts 
@@ -745,8 +752,7 @@ router.delete('/delete/:id', async (req, res) => {
             ]);
 
             // 如果是最近交易，更新后续交易余额
-            if (isRecentTransaction) {
-                const updateSubsequentQuery = `
+            const updateSubsequentQuery = `
                     UPDATE transactions
                     SET balance_after = balance_after - $1
                     WHERE 
@@ -754,13 +760,12 @@ router.delete('/delete/:id', async (req, res) => {
                         (transaction_date > $2 OR 
                         (transaction_date = $2 AND id > $3))
                 `;
-                await db.query(updateSubsequentQuery, [
-                    amountTrans,
-                    transactionDate,
-                    id,
-                    transaction.account_id
-                ]);
-            }
+            await db.query(updateSubsequentQuery, [
+                amountTrans,
+                transactionDate,
+                id,
+                transaction.account_id
+            ]);
 
             // 删除交易记录
             const deleteQuery = 'DELETE FROM transactions WHERE id = $1 RETURNING id';
