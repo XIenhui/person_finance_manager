@@ -4,8 +4,8 @@ import accountRoutes from './src/routes/setting/accountTypes.js';
 import accounts from "#routes/setting/accounts.js";
 import category from "#routes/setting/category.js";
 import transaction from "#routes/business/transaction.js";
-import day from "#routes/report/day.js";
 import custom from "#routes/report/custom.js";
+import account from "#routes/report/account.js";
 import screen from "#routes/home/dashboard.js";
 
 const app = express()
@@ -16,8 +16,8 @@ app.use('/api/setting/accountTypes', accountRoutes)
 app.use('/api/setting/accounts', accounts)
 app.use('/api/setting/category', category)
 app.use('/api/business/transaction', transaction)
-app.use('/api/report/day', day)
 app.use('/api/report/custom', custom)
+app.use('/api/report/account', account)
 app.use('/api/home/dashboard', screen)
 
 const PORT = process.env.PORT || 3001
