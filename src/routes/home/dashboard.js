@@ -26,7 +26,7 @@ router.get('/summary', async (req, res) => {
             WHERE 
                 transaction_type = 'expense' AND
                 status = 'completed' AND
-                c.code <> '09980001' AND
+                c.in_statistics = true AND
                 transaction_date BETWEEN $1 AND $2
         `;
         const monthExpenseResult = await db.query(monthExpenseQuery, [startOfMonth, endOfMonth]);
@@ -40,7 +40,7 @@ router.get('/summary', async (req, res) => {
             WHERE 
                 transaction_type = 'expense' AND
                 status = 'completed' AND
-                c.code <> '09980001' AND
+                c.in_statistics = true AND
                 transaction_date BETWEEN $1 AND $2
         `;
         const lastMonthExpenseResult = await db.query(lastMonthExpenseQuery, [startOfLastMonth, endOfLastMonth]);
@@ -59,7 +59,7 @@ router.get('/summary', async (req, res) => {
             WHERE 
                 transaction_type = 'income' AND
                 status = 'completed' AND
-                c.code <> '09990001' AND
+                c.in_statistics = true AND
                 transaction_date BETWEEN $1 AND $2
         `;
         const monthIncomeResult = await db.query(monthIncomeQuery, [startOfMonth, endOfMonth]);
@@ -73,7 +73,7 @@ router.get('/summary', async (req, res) => {
             WHERE 
                 transaction_type = 'income' AND
                 status = 'completed' AND
-                c.code <> '09990001' AND
+                c.in_statistics = true AND
                 transaction_date BETWEEN $1 AND $2
         `;
         const lastMonthIncomeResult = await db.query(lastMonthIncomeQuery, [startOfLastMonth, endOfLastMonth]);
@@ -84,16 +84,30 @@ router.get('/summary', async (req, res) => {
             ? ((monthIncome - lastMonthIncome) / lastMonthIncome * 100).toFixed(1)
             : 0;
 
-        // 获取可用余额
-        const totalRestQuery = `
+        const totalToPayQuery = `
             SELECT COALESCE(SUM(balance), 0) AS amount
             FROM financial_accounts f
             LEFT JOIN account_types t ON t.id = f.type_id
-            WHERE is_active = true AND
-            t.can_overdraft = false
+            WHERE is_active = true AND f.balance < 0
         `;
-        const totalRestResult = await db.query(totalRestQuery);
-        const totalRest = parseFloat(totalRestResult.rows[0].amount);
+        const totalToPayResult = await db.query(totalToPayQuery);
+        const totalToPay = parseFloat(totalToPayResult.rows[0].amount);
+
+        const totalPendingIncomeQuery = `
+            SELECT COALESCE(SUM(amount), 0) AS amount
+            FROM transactions t
+            WHERE t.status = 'pending' AND t.amount > 0
+        `;
+        const totalPendingIncomeResult = await db.query(totalPendingIncomeQuery);
+        const totalPendingIncome = parseFloat(totalPendingIncomeResult.rows[0].amount);
+
+        const totalPendingExpenseQuery = `
+            SELECT COALESCE(SUM(amount), 0) AS amount
+            FROM transactions t
+            WHERE t.status = 'pending' AND t.amount < 0
+        `;
+        const totalPendingExpenseResult = await db.query(totalPendingExpenseQuery);
+        const totalPendingExpense = parseFloat(totalPendingExpenseResult.rows[0].amount);
 
         // 获取总资产
         const totalAssetsQuery = `
@@ -102,7 +116,7 @@ router.get('/summary', async (req, res) => {
             WHERE is_active = true
         `;
         const totalAssetsResult = await db.query(totalAssetsQuery);
-        const totalAssets = parseFloat(totalAssetsResult.rows[0].amount);
+        const totalAssets = parseFloat(totalAssetsResult.rows[0].amount) - totalPendingIncome - totalPendingExpense;
 
         // 获取上月总资产（简化处理，实际可能需要更复杂的计算）
         const lastMonthAssets = totalAssets - monthIncome + monthExpense;
@@ -110,6 +124,7 @@ router.get('/summary', async (req, res) => {
             ? ((totalAssets - lastMonthAssets) / lastMonthAssets * 100).toFixed(1)
             : 0;
 
+        const repayment = totalToPay - totalPendingExpense
         res.json(success({
             month_expense: {
                 amount: monthExpense,
@@ -130,8 +145,12 @@ router.get('/summary', async (req, res) => {
                     totalAssets < lastMonthAssets ? 'decrease' : 'equal'
             },
             total_rest: {
-                amount: totalRest
-            }
+                available: totalAssets - repayment,
+                repayment: repayment,
+                pending_income: totalPendingIncome,
+                pending_expense: totalPendingExpense,
+                rest: totalAssets + totalPendingIncome + totalPendingExpense,
+            },
         }));
     } catch (err) {
         console.error('获取首页汇总数据失败:', err);
